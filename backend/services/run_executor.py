@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from typing import Any
 
 import httpx
@@ -27,6 +28,8 @@ logger = logging.getLogger(__name__)
 
 ADK_APP_NAME = "env_setup_validation"
 ADK_USER_ID = "operator"
+_ACTIVE_TASKS: dict[str, asyncio.Task[None]] = {}
+_ACTIVE_TASKS_LOCK = threading.Lock()
 
 
 def _serialize_adk_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -203,6 +206,12 @@ async def run_analysis_phase(
                 "Agent completed without finalize_validation_plan; inspect /adk/debug/trace "
                 f"or GET /api/runs/{run_id}/events.",
             )
+    except asyncio.CancelledError:
+        run = store.get_run(run_id)
+        if run and run.status not in ("completed", "failed", "cancelled"):
+            store.update_run_status(run_id, "cancelled")
+            store.append_event(run_id, "run_cancelled", {"message": "Analysis task cancelled"})
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.exception("run_analysis_phase failed")
         store.update_run_status(run_id, "failed", str(exc))
@@ -227,10 +236,29 @@ def spawn_analysis_task(
             "project_id and branch are required (body or GITLAB_PROJECT_ID / GITLAB_BRANCH)"
         )
 
-    return asyncio.create_task(
+    task = asyncio.create_task(
         run_analysis_phase(run_id, goal, store, pid, br, adk_app),
         name=f"analysis-{run_id}",
     )
+    with _ACTIVE_TASKS_LOCK:
+        _ACTIVE_TASKS[run_id] = task
+
+    def _remove_task(_task: asyncio.Task[None]) -> None:
+        with _ACTIVE_TASKS_LOCK:
+            if _ACTIVE_TASKS.get(run_id) is _task:
+                _ACTIVE_TASKS.pop(run_id, None)
+
+    task.add_done_callback(_remove_task)
+    return task
+
+
+def cancel_analysis_task(run_id: str) -> bool:
+    with _ACTIVE_TASKS_LOCK:
+        task = _ACTIVE_TASKS.get(run_id)
+    if task is None or task.done():
+        return False
+    task.cancel()
+    return True
 
 
 def validate_apply_prerequisites(store: RunStore, run_id: str) -> tuple[bool, str]:

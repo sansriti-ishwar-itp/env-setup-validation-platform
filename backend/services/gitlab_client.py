@@ -13,7 +13,6 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
-from httpx import HTTPStatusError
 
 logger = logging.getLogger(__name__)
 
@@ -91,39 +90,32 @@ class GitLabClient:
             "Content-Type": "application/json",
         }
 
-        existing: set[str] = set()
-        for f in files:
-            path = f.get("path") or f.get("file_path")
-            if not path:
-                continue
-            try:
-                check = self._client.get(
-                    f"{self._api}/projects/{enc}/repository/files/{quote(path, safe='')}",
-                    headers={"PRIVATE-TOKEN": self._token, "Accept": "application/json"},
-                    params={"ref": branch},
-                    timeout=30.0,
-                )
-                if check.status_code == 200:
-                    existing.add(path)
-            except HTTPStatusError:
-                pass
-
         actions = []
+        skipped_unchanged = []
         for f in files:
             path = f.get("path") or f.get("file_path")
             content = f.get("content")
             if not path or content is None:
                 continue
+            body = content if isinstance(content, str) else str(content)
+            current = self.get_file_raw(project_id, path, branch)
+            if current == body:
+                skipped_unchanged.append(path)
+                continue
             actions.append(
                 {
-                    "action": "update" if path in existing else "create",
+                    "action": "update" if current is not None else "create",
                     "file_path": path,
-                    "content": content if isinstance(content, str) else str(content),
+                    "content": body,
                 }
             )
 
         if not actions:
-            return {"error": "no valid file entries", "files_committed": []}
+            return {
+                "error": "no changed file entries",
+                "files_committed": [],
+                "skipped_unchanged": skipped_unchanged,
+            }
 
         url = f"{self._api}/projects/{enc}/repository/commits"
         body = {
@@ -143,4 +135,5 @@ class GitLabClient:
             "commit_message": commit_message,
             "branch": branch,
             "files_committed": [a["file_path"] for a in actions],
+            "skipped_unchanged": skipped_unchanged,
         }

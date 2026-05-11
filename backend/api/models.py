@@ -23,6 +23,14 @@ class ApprovalBody(BaseModel):
     segments: list[SegmentDecision]
 
 
+class InterventionBody(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+
+
+class CancelRunBody(BaseModel):
+    reason: str | None = Field(default=None, max_length=1000)
+
+
 class RunSummary(BaseModel):
     run_id: str
     status: str

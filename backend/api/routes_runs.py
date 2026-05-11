@@ -12,9 +12,20 @@ from fastapi.responses import StreamingResponse
 
 from ..gitlab_utils import get_gitlab_branch, get_gitlab_project_id, resolve_gitlab_auth
 from ..services.gitlab_client import GitLabClient
-from ..services.run_executor import spawn_analysis_task, validate_apply_prerequisites
+from ..services.run_executor import (
+    cancel_analysis_task,
+    spawn_analysis_task,
+    validate_apply_prerequisites,
+)
 from ..services.run_store import RunStore, SegmentRecord
-from .models import ApprovalBody, CreateRunBody, CreateRunResponse, RunSummary
+from .models import (
+    ApprovalBody,
+    CancelRunBody,
+    CreateRunBody,
+    CreateRunResponse,
+    InterventionBody,
+    RunSummary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +175,53 @@ async def approve_segments(run_id: str, body: ApprovalBody, request: Request) ->
     return {"status": "ok", "segments": [_segment_model(s) for s in run.segments]}
 
 
+@router.post("/{run_id}/interventions")
+async def add_intervention(
+    run_id: str,
+    body: InterventionBody,
+    request: Request,
+) -> dict[str, Any]:
+    store = _store(request)
+    run = store.get_run(run_id)
+    if not run:
+        raise HTTPException(404, detail="Run not found")
+    if run.status in ("completed", "failed", "cancelled", "applying"):
+        raise HTTPException(400, detail=f"Run cannot accept interventions (status={run.status})")
+
+    event_payload = {"message": body.message, "status_at_submit": run.status}
+    event_id = store.append_event(run_id, "operator_intervention", event_payload)
+    event = store.list_events_since(run_id, event_id - 1)[0]
+    return {"status": "ok", "event": event}
+
+
+@router.post("/{run_id}/cancel")
+async def cancel_run(
+    run_id: str,
+    body: CancelRunBody,
+    request: Request,
+) -> dict[str, Any]:
+    store = _store(request)
+    run = store.get_run(run_id)
+    if not run:
+        raise HTTPException(404, detail="Run not found")
+    if run.status in ("completed", "failed", "cancelled"):
+        raise HTTPException(400, detail=f"Run already finished (status={run.status})")
+    if run.status == "applying":
+        raise HTTPException(400, detail="Cannot cancel while GitLab apply is in progress")
+
+    task_cancelled = cancel_analysis_task(run_id)
+    reason = body.reason or "Cancelled by operator"
+    store.update_run_status(run_id, "cancelled")
+    event_payload = {
+        "message": reason,
+        "task_cancelled": task_cancelled,
+        "status_at_cancel": run.status,
+    }
+    event_id = store.append_event(run_id, "run_cancelled", event_payload)
+    event = store.list_events_since(run_id, event_id - 1)[0]
+    return {"status": "cancelled", "event": event}
+
+
 @router.post("/{run_id}/apply")
 async def apply_segments(run_id: str, request: Request) -> dict[str, Any]:
     store = _store(request)
@@ -178,25 +236,55 @@ async def apply_segments(run_id: str, request: Request) -> dict[str, Any]:
     run = store.get_run(run_id)
     assert run is not None
 
-    store.update_run_status(run_id, "applying")
-    store.append_event(run_id, "apply_started", {})
-
     updated_segments: list[SegmentRecord] = []
-    for seg in run.segments:
-        if not seg.approved:
-            seg.apply_status = "skipped"
-        else:
-            seg.apply_status = "pending"
-        updated_segments.append(seg)
-
-    commit_files = [
-        {"path": s.file_path, "content": s.new_content}
-        for s in run.segments
-        if s.approved
-    ]
-
+    commit_files: list[dict[str, str]] = []
+    unchanged_files: list[str] = []
     gitlab = GitLabClient(token=token, api_url=api_url)
+
     try:
+        for seg in run.segments:
+            if not seg.approved:
+                seg.apply_status = "skipped"
+                seg.apply_error = None
+                updated_segments.append(seg)
+                continue
+
+            remote_content = gitlab.get_file_raw(run.project_id, seg.file_path, run.branch)
+            if remote_content == seg.new_content:
+                seg.apply_status = "unchanged"
+                seg.apply_error = "Approved content already matches the target branch"
+                unchanged_files.append(seg.file_path)
+            else:
+                seg.apply_status = "pending"
+                seg.apply_error = None
+                commit_files.append({"path": seg.file_path, "content": seg.new_content})
+            updated_segments.append(seg)
+
+        store.update_segments(run_id, updated_segments)
+        if not commit_files:
+            store.append_event(
+                run_id,
+                "apply_skipped",
+                {
+                    "message": "No approved segments changed the target branch content.",
+                    "unchanged_files": unchanged_files,
+                },
+            )
+            raise HTTPException(
+                400,
+                detail="Approved segments do not change any GitLab files. Edit a proposed body "
+                "or approve a segment with an actual code delta before applying.",
+            )
+
+        store.update_run_status(run_id, "applying")
+        store.append_event(
+            run_id,
+            "apply_started",
+            {
+                "files": [f["path"] for f in commit_files],
+                "unchanged_files": unchanged_files,
+            },
+        )
         result = gitlab.push_files(
             run.project_id,
             run.branch,
@@ -214,7 +302,7 @@ async def apply_segments(run_id: str, request: Request) -> dict[str, Any]:
             raise HTTPException(502, detail=result["error"])
 
         for seg in updated_segments:
-            if seg.approved:
+            if seg.apply_status == "pending":
                 seg.apply_status = "applied"
         store.update_segments(run_id, updated_segments)
         store.update_run_status(run_id, "completed")
