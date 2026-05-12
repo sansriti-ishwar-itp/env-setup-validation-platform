@@ -46,12 +46,11 @@ async def list_adk_endpoints() -> dict[str, object]:
             "artifacts_prefix": "/adk/apps/{app_name}/users/{user_id}/sessions/{session_id}/artifacts",
             "memory_patch": "PATCH /adk/apps/{app_name}/users/{user_id}/memory",
         },
-        "neurostack_alignment": {
+        "alignment": {
             "reference": "modular_agents/api/routers/agents.py — execute_agent_with_adk",
             "session_seed": (
                 "POST /adk/apps/{app_name}/users/{user_id}/sessions/{session_id} "
-                "with JSON body containing initial session state (neurostack passes "
-                "the state dict as the POST body for continuity)."
+                "with JSON body containing initial session state"
             ),
             "run_sse_body_shape": {
                 "appName": "env_setup_validation",
@@ -61,6 +60,6 @@ async def list_adk_endpoints() -> dict[str, object]:
                 "streaming": False,
                 "invocationId": "(optional, resume — same as ADK docs)",
             },
-            "gitlab_env": "modular_agents/agents/sdlc_agents/gitlab_utils.py + gitlab_automation_agent/server.py _resolve_gitlab_auth",
+            "gitlab_env": "modular_agents/agents/gitlab_utils.py + gitlab_automation_agent/server.py _resolve_gitlab_auth",
         },
     }

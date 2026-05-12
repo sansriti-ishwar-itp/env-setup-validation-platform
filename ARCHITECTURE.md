@@ -66,9 +66,7 @@ The LLM **plans** how to turn findings into coherent multi-file edits and **must
 - Operators can **refresh** the UI: `GET /api/runs/{id}` returns current segments and status.
 - Failed apply: run moves to `failed` with GitLab error text on segments; you can fix `.env` / token and start a new run (future: retry partial apply).
 
-## Relation to neurostack
-
-- **GitLab:** [`backend/gitlab_utils.py`](backend/gitlab_utils.py) matches [`modular_agents/agents/sdlc_agents/gitlab_utils.py`](../modular_agents/agents/sdlc_agents/gitlab_utils.py) (project/branch) and [`gitlab_automation_agent/server.py`](../modular_agents/agents/gitlab_automation_agent/server.py) `_resolve_gitlab_auth` (token + default API URL).
+- **GitLab:** [`backend/gitlab_utils.py`](backend/gitlab_utils.py) matches [`modular_agents/agents/gitlab_utils.py`](../modular_agents/agents/gitlab_utils.py) (project/branch) and [`gitlab_automation_agent/server.py`](../modular_agents/agents/gitlab_automation_agent/server.py) `_resolve_gitlab_auth` (token + default API URL).
 - **ADK:** [`backend/services/run_executor.py`](backend/services/run_executor.py) follows the same flow as [`modular_agents/api/routers/agents.py`](../modular_agents/api/routers/agents.py) `execute_agent_with_adk`: create ADK session state, then invoke the mounted stock `/adk/run_sse` endpoint.
 
 There is **no Python import** of `modular_agents` — this folder stays portable; links above are for reviewers comparing behaviour.

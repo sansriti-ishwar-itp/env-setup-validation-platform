@@ -1,7 +1,7 @@
 """
 Execute ADK analysis phase through the stock ADK `/run_sse` endpoint.
 
-Neurostack parity: matches the intent of `execute_agent_with_adk` in
+parity: matches the intent of `execute_agent_with_adk` in
 `modular_agents/api/routers/agents.py` — seed session state, then invoke the agent
 over the official ADK HTTP protocol with the same session keys and GitLab env contract.
 """

@@ -1,4 +1,4 @@
-"""Load configuration from environment (delegates GitLab to gitlab_utils — neurostack-aligned)."""
+"""Load configuration from environment (delegates GitLab to gitlab_utils)."""
 
 from __future__ import annotations
 

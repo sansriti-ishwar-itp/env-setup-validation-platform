@@ -85,7 +85,7 @@ class GitLabClient:
     ) -> dict[str, Any]:
         """
         Commit multiple files in one request.
-        Each item: {"path": "...", "content": "..."} (same as neurostack).
+        Each item: {"path": "...", "content": "..."}.
         """
         if not files:
             return {"error": "no files", "files_committed": []}

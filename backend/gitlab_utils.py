@@ -1,7 +1,7 @@
 """
-GitLab configuration for env validation — **same env contract as neurostack**:
+GitLab configuration for env validation**:
 
-- Project/branch: `modular_agents/agents/sdlc_agents/gitlab_utils.py`
+- Project/branch: `modular_agents/agents/gitlab_utils.py`
 - Token + API URL resolution: `modular_agents/agents/gitlab_automation_agent/server.py`
   (`_resolve_gitlab_auth`, default API URL when `GITLAB_API_URL` is unset).
 
@@ -19,7 +19,7 @@ load_dotenv(find_dotenv())
 
 
 def get_gitlab_project_id() -> Optional[str]:
-    """GITLAB_PROJECT_ID — mirrors neurostack `get_gitlab_project_id()`."""
+    """GITLAB_PROJECT_ID —  `get_gitlab_project_id()`."""
     project_id = os.getenv("GITLAB_PROJECT_ID")
     if project_id is None or not str(project_id).strip():
         return None
@@ -27,7 +27,7 @@ def get_gitlab_project_id() -> Optional[str]:
 
 
 def get_configured_base_branch() -> Optional[str]:
-    """GITLAB_BRANCH — mirrors neurostack `get_configured_base_branch()`."""
+    """GITLAB_BRANCH — `get_configured_base_branch()`."""
     branch = os.getenv("GITLAB_BRANCH")
     if branch is None or not str(branch).strip():
         return None
@@ -41,7 +41,7 @@ def get_gitlab_branch() -> Optional[str]:
 
 def resolve_gitlab_auth() -> Tuple[Optional[str], str]:
     """
-    Token + API URL — mirrors neurostack `_resolve_gitlab_auth()` in
+    Token + API URL — `_resolve_gitlab_auth()` in
     `gitlab_automation_agent/server.py`.
     """
     gitlab_token = (
