@@ -2,10 +2,6 @@
 
 Python **Google ADK** agent that inspects a **GitLab** repository for Python/container environment artifacts (`requirements.txt`, `.env.example`, `docker-compose.yml`, `Dockerfile`, …), runs **deterministic checks**, proposes **file-level fixes**, and stops for **human approval** before committing to the configured branch.
 
-This folder is **self-contained** (copy it out of the monorepo into its own Git repository when you submit).
-
-**Neurostack alignment:** GitLab env vars and token/API URL resolution match [`modular_agents/agents/sdlc_agents/gitlab_utils.py`](../modular_agents/agents/sdlc_agents/gitlab_utils.py) and [`gitlab_automation_agent/server.py`](../modular_agents/agents/gitlab_automation_agent/server.py) (`_resolve_gitlab_auth`). ADK usage mirrors [`modular_agents/api/routers/agents.py`](../modular_agents/api/routers/agents.py) `execute_agent_with_adk`: the operator API seeds an ADK session, then invokes the mounted stock ADK `/run_sse` endpoint.
-
 ## Use case
 
 Platform engineers waste time on “works on my machine” failures that come from missing env vars, inconsistent compose ports, unpinned dependencies, and drift between Dockerfile and compose. This tool automates **discovery + analysis + patch proposals** while keeping **writes behind an explicit approval gate**, matching operational reality.
