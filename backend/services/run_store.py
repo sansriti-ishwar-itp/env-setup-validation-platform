@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
@@ -11,6 +12,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator, Literal
+
+logger = logging.getLogger(__name__)
 
 RunStatus = Literal[
     "pending",
@@ -25,6 +28,12 @@ RunStatus = Literal[
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _session_log_path(run_id: str) -> Path:
+    repo_root = Path(__file__).resolve().parents[2]
+    safe_run_id = "".join(c if c.isalnum() or c in {"-", "_"} else "_" for c in run_id)
+    return repo_root / "logs" / f"agent-session-{safe_run_id}.jsonl"
 
 
 @dataclass
@@ -144,6 +153,18 @@ class RunStore:
                     json.dumps([]),
                 ),
             )
+        self._append_session_log(
+            run_id,
+            "run_created",
+            {
+                "status": "pending",
+                "goal": goal,
+                "project_id": project_id,
+                "branch": branch,
+                "metadata": meta or {},
+            },
+            ts=now,
+        )
         return run_id
 
     def ensure_run(
@@ -155,8 +176,9 @@ class RunStore:
         meta: dict[str, Any] | None = None,
     ) -> None:
         now = _utc_now()
+        inserted = False
         with self._lock, self._connect() as conn:
-            conn.execute(
+            cur = conn.execute(
                 """
                 INSERT OR IGNORE INTO runs (
                     run_id, status, goal, project_id, branch,
@@ -178,6 +200,21 @@ class RunStore:
                     json.dumps([]),
                 ),
             )
+            inserted = cur.rowcount > 0
+        if inserted:
+            self._append_session_log(
+                run_id,
+                "run_created",
+                {
+                    "status": "running",
+                    "goal": goal,
+                    "project_id": project_id,
+                    "branch": branch,
+                    "metadata": meta or {},
+                    "source": "adk_session",
+                },
+                ts=now,
+            )
 
     def update_run_status(
         self,
@@ -194,6 +231,12 @@ class RunStore:
                 """,
                 (status, now, error_message, run_id),
             )
+        self._append_session_log(
+            run_id,
+            "status_changed",
+            {"status": status, "error_message": error_message},
+            ts=now,
+        )
 
     def save_analysis_result(
         self,
@@ -215,6 +258,16 @@ class RunStore:
                 """,
                 ("awaiting_approval", now, setup_instructions, json.dumps(payload), run_id),
             )
+        self._append_session_log(
+            run_id,
+            "analysis_result_saved",
+            {
+                "status": "awaiting_approval",
+                "setup_instructions": setup_instructions,
+                "segments": payload,
+            },
+            ts=now,
+        )
 
     def update_segments(self, run_id: str, segments: list[SegmentRecord]) -> None:
         now = _utc_now()
@@ -224,17 +277,26 @@ class RunStore:
                 "UPDATE runs SET segments_json = ?, updated_at = ? WHERE run_id = ?",
                 (json.dumps(payload), now, run_id),
             )
+        self._append_session_log(
+            run_id,
+            "segments_updated",
+            {"segments": payload},
+            ts=now,
+        )
 
     def append_event(self, run_id: str, kind: str, payload: dict[str, Any]) -> int:
+        ts = _utc_now()
         with self._lock, self._connect() as conn:
             cur = conn.execute(
                 """
                 INSERT INTO events (run_id, ts, kind, payload_json)
                 VALUES (?, ?, ?, ?)
                 """,
-                (run_id, _utc_now(), kind, json.dumps(payload)),
+                (run_id, ts, kind, json.dumps(payload)),
             )
-            return int(cur.lastrowid)
+            event_id = int(cur.lastrowid)
+        self._append_session_log(run_id, kind, payload, ts=ts, event_id=event_id)
+        return event_id
 
     def recover_interrupted_runs(self) -> list[str]:
         """
@@ -243,6 +305,7 @@ class RunStore:
         """
         now = _utc_now()
         message = "Run was interrupted by a backend restart. Retry to continue from the same goal."
+        interrupted: list[tuple[str, str, int]] = []
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 """
@@ -260,7 +323,7 @@ class RunStore:
                     """,
                     ("failed", now, message, run_id),
                 )
-                conn.execute(
+                cur = conn.execute(
                     """
                     INSERT INTO events (run_id, ts, kind, payload_json)
                     VALUES (?, ?, ?, ?)
@@ -277,7 +340,19 @@ class RunStore:
                         ),
                     ),
                 )
-            return [str(row["run_id"]) for row in rows]
+                interrupted.append((run_id, previous_status, int(cur.lastrowid)))
+        for run_id, previous_status, event_id in interrupted:
+            self._append_session_log(
+                run_id,
+                "run_interrupted",
+                {
+                    "message": message,
+                    "previous_status": previous_status,
+                },
+                ts=now,
+                event_id=event_id,
+            )
+        return [run_id for run_id, _, _ in interrupted]
 
     def list_events_since(self, run_id: str, after_id: int = 0) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -339,6 +414,37 @@ class RunStore:
             segments=segments,
             metadata=json.loads(row["meta_json"] or "{}"),
         )
+
+    def _append_session_log(
+        self,
+        run_id: str,
+        kind: str,
+        payload: dict[str, Any],
+        *,
+        ts: str | None = None,
+        event_id: int | None = None,
+    ) -> None:
+        """Mirror persisted agent session activity into repo-local JSONL logs."""
+        record: dict[str, Any] = {
+            "ts": ts or _utc_now(),
+            "run_id": run_id,
+            "kind": kind,
+            "payload": payload,
+        }
+        if event_id is not None:
+            record["event_id"] = event_id
+        try:
+            path = _session_log_path(run_id)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False, default=str))
+                handle.write("\n")
+        except OSError:
+            logger.exception("Unable to write agent session log for run %s", run_id)
+
+    def append_session_log(self, run_id: str, kind: str, payload: dict[str, Any]) -> None:
+        """Write a log-only session entry without adding a UI/database event."""
+        self._append_session_log(run_id, kind, payload)
 
     @staticmethod
     def _segment_to_dict(s: SegmentRecord) -> dict[str, Any]:

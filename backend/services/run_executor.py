@@ -111,6 +111,17 @@ async def _stream_adk_run(
             },
         )
         await _raise_for_adk_error(session_response, "session create")
+        store.append_session_log(
+            run_id,
+            "adk_session_created",
+            {
+                "app_name": ADK_APP_NAME,
+                "user_id": ADK_USER_ID,
+                "session_id": run_id,
+                "project_id": project_id,
+                "branch": branch,
+            },
+        )
 
         run_body = {
             "appName": ADK_APP_NAME,
@@ -119,6 +130,7 @@ async def _stream_adk_run(
             "newMessage": {"role": "user", "parts": [{"text": goal}]},
             "streaming": False,
         }
+        store.append_session_log(run_id, "adk_run_started", {"request": run_body})
 
         data_lines: list[str] = []
         async with client.stream("POST", "/run_sse", json=run_body) as response:
@@ -134,6 +146,7 @@ async def _stream_adk_run(
 
         if data_lines:
             _append_sse_payload(store, run_id, "\n".join(data_lines))
+        store.append_session_log(run_id, "adk_run_finished", {"session_id": run_id})
 
 
 def _append_sse_payload(store: RunStore, run_id: str, raw_payload: str) -> None:
@@ -143,6 +156,7 @@ def _append_sse_payload(store: RunStore, run_id: str, raw_payload: str) -> None:
         store.append_event(run_id, "adk_event", {"raw": raw_payload[:8000]})
         return
     if isinstance(event, dict):
+        store.append_session_log(run_id, "adk_raw_event", {"event": event})
         store.append_event(run_id, "adk_event", _serialize_adk_event(event))
     else:
         store.append_event(run_id, "adk_event", {"raw": event})

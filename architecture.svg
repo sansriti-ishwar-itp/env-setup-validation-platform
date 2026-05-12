@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="520" viewBox="0 0 1120 520" role="img" aria-labelledby="title desc">
+  <title id="title">Environment Setup Validation Platform Architecture</title>
+  <desc id="desc">Simplified architecture diagram showing operator UI, FastAPI backend, agent runtime, persisted state, and GitLab.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#2563eb" />
+    </marker>
+    <filter id="shadow" x="-12%" y="-18%" width="124%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0f172a" flood-opacity="0.12" />
+    </filter>
+    <style>
+      .bg { fill: #f7f8fa; }
+      .title { fill: #0f172a; font: 700 30px Arial, sans-serif; }
+      .subtitle { fill: #475467; font: 400 15px Arial, sans-serif; }
+      .box { stroke-width: 1.4; filter: url(#shadow); }
+      .blue { fill: #eff4ff; stroke: #bfdbfe; }
+      .sky { fill: #e0f2fe; stroke: #bae6fd; }
+      .violet { fill: #f3e8ff; stroke: #ddd6fe; }
+      .green { fill: #ecfdf3; stroke: #a7f3d0; }
+      .amber { fill: #fff6e6; stroke: #fed7aa; }
+      .label { fill: #111827; font: 700 18px Arial, sans-serif; }
+      .body { fill: #475467; font: 400 14px Arial, sans-serif; }
+      .note { fill: #667085; font: 400 13px Arial, sans-serif; }
+      .arrow { stroke: #2563eb; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      .soft-arrow { stroke: #94a3b8; stroke-width: 2; fill: none; stroke-dasharray: 6 6; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1120" height="520" rx="28" />
+  <text class="title" x="44" y="58">Environment Setup Validation Platform</text>
+  <text class="subtitle" x="44" y="84">High-level flow: UI to Python APIs, agent tools, persisted state, and GitLab.</text>
+
+  <rect class="box blue" x="54" y="178" width="180" height="120" rx="18" />
+  <text class="label" x="84" y="220">Operator UI</text>
+  <text class="body" x="84" y="248">Start run</text>
+  <text class="body" x="84" y="270">Review and approve</text>
+
+  <rect class="box sky" x="304" y="150" width="220" height="176" rx="18" />
+  <text class="label" x="334" y="196">FastAPI Backend</text>
+  <text class="body" x="334" y="224">/api/runs</text>
+  <text class="body" x="334" y="246">/api/agent</text>
+  <text class="body" x="334" y="268">SSE events</text>
+  <text class="body" x="334" y="290">HITL approvals</text>
+
+  <rect class="box violet" x="594" y="150" width="220" height="176" rx="18" />
+  <text class="label" x="624" y="196">Agent Runtime</text>
+  <text class="body" x="624" y="224">Python tools</text>
+  <text class="body" x="624" y="246">Discover files</text>
+  <text class="body" x="624" y="268">Analyze setup</text>
+  <text class="body" x="624" y="290">Propose fixes</text>
+
+  <rect class="box green" x="594" y="374" width="220" height="92" rx="18" />
+  <text class="label" x="624" y="410">SQLite State</text>
+  <text class="body" x="624" y="438">Runs, events, segments</text>
+
+  <rect class="box amber" x="884" y="178" width="180" height="120" rx="18" />
+  <text class="label" x="914" y="220">GitLab</text>
+  <text class="body" x="914" y="248">Read setup files</text>
+  <text class="body" x="914" y="270">Commit approved fixes</text>
+
+  <path class="arrow" d="M234 238 H304" />
+  <path class="arrow" d="M524 238 H594" />
+  <path class="arrow" d="M814 238 H884" />
+  <path class="soft-arrow" d="M704 326 V374" />
+  <path class="soft-arrow" d="M594 420 H414 V326" />
+
+  <text class="note" x="304" y="376">Backend persists every step and supports reopen/retry after refresh or restart.</text>
+  <text class="note" x="304" y="400">GitLab writes happen only after human approval.</text>
+</svg>
