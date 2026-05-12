@@ -17,7 +17,7 @@ from ..services.run_executor import (
     spawn_analysis_task,
     validate_apply_prerequisites,
 )
-from ..services.run_store import RunStore, SegmentRecord
+from ..services.run_store import RunRecord, RunStore, SegmentRecord
 from .models import (
     ApprovalBody,
     CancelRunBody,
@@ -34,6 +34,12 @@ router = APIRouter(prefix="/api/runs", tags=["runs"])
 
 def _store(request: Request) -> RunStore:
     return request.app.state.store
+
+
+@router.get("", response_model=list[RunSummary])
+async def list_runs(request: Request, limit: int = 50) -> list[RunSummary]:
+    store = _store(request)
+    return [_run_summary(run) for run in store.list_runs(limit=limit)]
 
 
 @router.post("", response_model=CreateRunResponse)
@@ -69,6 +75,49 @@ async def get_run(run_id: str, request: Request) -> RunSummary:
     run = store.get_run(run_id)
     if not run:
         raise HTTPException(404, detail="Run not found")
+    return _run_summary(run)
+
+
+@router.post("/{run_id}/retry", response_model=CreateRunResponse)
+async def retry_run(run_id: str, request: Request) -> CreateRunResponse:
+    store = _store(request)
+    run = store.get_run(run_id)
+    if not run:
+        raise HTTPException(404, detail="Run not found")
+    if run.status not in ("failed", "cancelled"):
+        raise HTTPException(
+            409,
+            detail=f"Only failed or cancelled runs can be retried (status={run.status})",
+        )
+
+    new_run_id = store.create_run(
+        goal=run.goal,
+        project_id=run.project_id,
+        branch=run.branch,
+        meta={"source": "retry", "retry_of": run.run_id},
+    )
+    store.append_event(
+        run.run_id,
+        "retry_started",
+        {"new_run_id": new_run_id, "message": "Retry created from this run."},
+    )
+    store.append_event(
+        new_run_id,
+        "retry_of",
+        {"source_run_id": run.run_id, "message": "Run restarted from a saved run."},
+    )
+    spawn_analysis_task(
+        run_id=new_run_id,
+        goal=run.goal,
+        store=store,
+        project_id=run.project_id,
+        branch=run.branch,
+        adk_app=request.app.state.adk_app,
+    )
+    return CreateRunResponse(run_id=new_run_id)
+
+
+def _run_summary(run: RunRecord) -> RunSummary:
     return RunSummary(
         run_id=run.run_id,
         status=run.status,

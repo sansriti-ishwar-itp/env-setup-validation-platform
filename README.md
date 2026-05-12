@@ -1,6 +1,6 @@
 # Environment Setup Validation Platform
 
-Python **Google ADK** agent that inspects a **GitLab** repository for Python/container environment artifacts (`requirements.txt`, `.env.example`, `docker-compose.yml`, `Dockerfile`, …), runs **deterministic checks**, proposes **file-level fixes**, and stops for **human approval** before committing to the configured branch.
+Python **FastAPI** platform with a GitLab-aware validation agent. It inspects Python/container environment artifacts (`requirements.txt`, `.env.example`, `docker-compose.yml`, `Dockerfile`, `README.md`, …), runs deterministic setup checks, proposes file-level fixes, and stops for **human approval** before committing to the configured branch. The app exposes both a project-owned Python API layer and an optional mounted Google ADK runtime surface.
 
 ## Use case
 
@@ -10,7 +10,7 @@ Platform engineers waste time on “works on my machine” failures that come fr
 
 - Python **3.11+**
 - Node **18+** (for the operator UI)
-- Google ADK **1.32+** (`google-adk>=1.32.0`)
+- Google ADK **1.32+** (`google-adk>=1.32.0`) for the managed agent runtime
 - A **GitLab** personal access token with at least `read_api` and `write_repository`
 - A **Gemini / Google AI** API key (`GOOGLE_API_KEY` or `GEMINI_API_KEY`, depending on your client defaults)
 
@@ -71,11 +71,12 @@ Windows shortcut (opens API in a new window, then runs Vite):
 
 ## Operator flow
 
-1. Open the UI, leave or edit the goal (default: “Validate my Python project setup”), click **Start validation**.
-2. Watch **SSE trace** lines for tool calls and ADK events.
-3. When status becomes **awaiting_approval**, review **setup instructions** and each **segment** (full-file replacement bodies).
-4. Toggle **Approve for commit**, edit bodies if needed, click **Save approval decisions**.
-5. Click **Apply approved segments to GitLab** to create a single commit on `GITLAB_BRANCH`.
+1. Open the UI, leave or edit the goal (default: “Validate my Python project setup”), click **Initiate validation**.
+2. Use **Recover or restart work** to reopen persisted runs by session id, filter successful/running/retryable runs, or retry failed/cancelled work.
+3. Watch the live phase cards and **SSE trace** lines for tool calls, operator actions, and agent events.
+4. When status becomes **awaiting approval**, review **setup instructions** and each **segment** (full-file replacement bodies).
+5. Toggle **Approve this change for commit**, edit bodies if needed, click **Save decisions**.
+6. Click **Apply approved changes** to create a single GitLab commit on `GITLAB_BRANCH`.
 
 ## API summary
 
@@ -83,14 +84,33 @@ Windows shortcut (opens API in a new window, then runs Vite):
 
 | Method | Path | Description |
 |--------|------|-------------|
+| GET | `/api/runs` | List persisted runs for recovery/reopen UI |
 | POST | `/api/runs` | Start analysis (`goal`, optional `project_id` / `branch`) |
 | GET | `/api/runs/{id}` | Full run state + segments |
 | GET | `/api/runs/{id}/events` | SSE event stream |
 | POST | `/api/runs/{id}/approval` | Approve/reject/edit segments |
+| POST | `/api/runs/{id}/interventions` | Add operator context while a run is active or awaiting approval |
+| POST | `/api/runs/{id}/cancel` | Cancel a pending/running/awaiting-approval run |
+| POST | `/api/runs/{id}/retry` | Restart a failed/cancelled run with the same goal/project/branch |
 | POST | `/api/runs/{id}/apply` | Push approved segments via GitLab commits API |
+| GET | `/api/agent/runtime` | Python-native runtime metadata and state keys |
+| GET | `/api/agent/tools` | List direct Python tool execution capabilities |
+| POST | `/api/agent/tools/execute` | Execute deterministic Python tools directly (`discover_environment_files`, `analyze_environment_setup`) |
+| GET | `/api/agent/state/{run_id}` | Fetch persisted run state plus events through the Python API layer |
 | GET | `/api/adk/endpoints` | Cheat sheet for mounted ADK routes |
 
-### ADK REST API (official surface, mounted at `/adk`)
+### Python-native agent API
+
+The assignment-facing API layer is under `/api/agent`. It exposes agent runtime metadata, deterministic tool execution, and persisted state without requiring callers to speak the ADK REST protocol directly. The managed `/api/runs` flow still uses the ADK-backed agent internally, but `/api/agent/tools/execute` can call the Python discovery/analysis tools directly with a `run_id`, `project_id`/`branch`, and optional tool arguments.
+
+State keys used by the direct tool layer are:
+
+- `evs_project_id` — GitLab project id or path.
+- `evs_branch` — target branch/ref.
+- `evs_run_id` — run/session id used to attach events to persisted state.
+- `evs_file_contents` — discovered setup file contents used by analysis.
+
+### ADK REST API (optional official surface, mounted at `/adk`)
 
 The stock ADK FastAPI app from `google.adk.cli.fast_api.get_fast_api_app` is **mounted at `/adk`**, so you get the endpoints documented in the [ADK REST API Reference](https://google.github.io/adk-docs/api-reference/rest/), including:
 
@@ -107,11 +127,20 @@ The root agent is wrapped in **`google.adk.apps.App`** with **`ResumabilityConfi
 
 **Session persistence:** set `ADK_SESSION_SERVICE_URI` (defaults to `sqlite:///…/data/adk_sessions.db`). `POST /api/runs` creates the session through the built-in ADK session endpoint, then runs through `/adk/run_sse`.
 
+## State, failure handling, and restartability
+
+- **State across steps:** SQLite stores run status, goal, GitLab target, setup instructions, proposed segments, approvals, apply status, and append-only events.
+- **Graceful failures:** missing configuration, ADK/runtime errors, GitLab apply errors, cancelled runs, and unchanged approved content are surfaced as run statuses and timeline events.
+- **Recovery after refresh:** `GET /api/runs` and `GET /api/runs/{id}` let the UI reopen previous sessions.
+- **Restart/retry:** `POST /api/runs/{id}/retry` creates a new run from a failed/cancelled run using the same goal/project/branch.
+- **Backend restart reconciliation:** startup marks stale `pending`, `running`, or `applying` runs as `failed` with a `run_interrupted` event so they do not stay stuck forever.
+
 ## Design choices
 
 - **Two-phase orchestration**: Phase 1 is read-only on GitLab except metadata reads; phase 2 applies approved edits. This mirrors control-plane approval patterns without needing an external approval service.
-- **REST GitLab client** instead of MCP+npx keeps local setup Python-only.
-- **SQLite** stores runs, segments, and append-only events for transparency and refresh-safe UI.
+- **Python-native API layer**: `/api/agent` exposes runtime metadata, direct tool execution, and state access even though the managed agent runtime remains ADK-backed.
+- **REST GitLab client** instead of MCP/npx keeps local setup Python-only.
+- **SQLite** stores runs, segments, and append-only events for transparency, refresh-safe UI, and restart recovery.
 - **Neurostack alignment**: env vars mirror [`gitlab_utils.py`](../modular_agents/agents/sdlc_agents/gitlab_utils.py) and commit behavior follows [`gitlab_automation_agent/server.py`](../modular_agents/agents/gitlab_automation_agent/server.py) (`push_files`-style actions).
 
 ## Assignment checklist

@@ -10,6 +10,7 @@ type RunStatus =
   | "cancelled";
 
 type EventCategory = "all" | "agent" | "tool" | "operator" | "system";
+type RecoveryFilter = "all" | "successful" | "resume" | "active" | "review";
 type StepState = "done" | "active" | "waiting";
 
 interface SegmentRow {
@@ -66,6 +67,10 @@ function shorten(text: string, max = 220): string {
   const compact = text.replace(/\s+/g, " ").trim();
   if (compact.length <= max) return compact;
   return `${compact.slice(0, max - 1)}...`;
+}
+
+function shortSessionId(id: string): string {
+  return id.slice(0, 8);
 }
 
 function formatTime(ts: string): string {
@@ -220,6 +225,18 @@ function isInterventionAllowed(status: RunStatus | undefined): boolean {
   return status === "pending" || status === "running" || status === "awaiting_approval";
 }
 
+function isRetryAllowed(status: RunStatus | undefined): boolean {
+  return status === "failed" || status === "cancelled";
+}
+
+function matchesRecoveryFilter(run: RunPayload, filter: RecoveryFilter): boolean {
+  if (filter === "successful") return run.status === "completed";
+  if (filter === "resume") return isRetryAllowed(run.status);
+  if (filter === "active") return ["pending", "running", "applying"].includes(run.status);
+  if (filter === "review") return run.status === "awaiting_approval";
+  return true;
+}
+
 function segmentHasDelta(segment: SegmentRow, draft: string): boolean {
   return segment.original_content === null || draft !== segment.original_content;
 }
@@ -228,10 +245,13 @@ export function App() {
   const [goal, setGoal] = useState("Validate my Python project setup");
   const [runId, setRunId] = useState<string | null>(null);
   const [run, setRun] = useState<RunPayload | null>(null);
+  const [recentRuns, setRecentRuns] = useState<RunPayload[]>([]);
   const [events, setEvents] = useState<StreamEvent[]>([]);
   const [busy, setBusy] = useState(false);
   const [interventionText, setInterventionText] = useState("");
   const [eventFilter, setEventFilter] = useState<EventCategory>("all");
+  const [recoveryFilter, setRecoveryFilter] = useState<RecoveryFilter>("all");
+  const [selectedRecentRunId, setSelectedRecentRunId] = useState("");
   const esRef = useRef<EventSource | null>(null);
   const localEventId = useRef(-1);
 
@@ -278,10 +298,21 @@ export function App() {
     });
   }, []);
 
+  const fetchRecentRuns = useCallback(async () => {
+    const r = await fetch("/api/runs?limit=6");
+    if (!r.ok) return;
+    const j = (await r.json()) as RunPayload[];
+    setRecentRuns(j);
+  }, []);
+
   useEffect(() => {
     if (!runId) return;
     fetchRun(runId);
   }, [runId, fetchRun]);
+
+  useEffect(() => {
+    fetchRecentRuns();
+  }, [fetchRecentRuns]);
 
   const startRun = async () => {
     setBusy(true);
@@ -303,6 +334,32 @@ export function App() {
       }
       const j = (await r.json()) as { run_id: string };
       setRunId(j.run_id);
+      await fetchRecentRuns();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openRun = (id: string) => {
+    setEvents([]);
+    setRun(null);
+    setEditMap({});
+    setApproveMap({});
+    setRunId(id);
+  };
+
+  const retryRun = async (id: string) => {
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/runs/${id}/retry`, { method: "POST" });
+      const text = await r.text();
+      if (!r.ok) {
+        appendLocalEvent("error", text);
+        return;
+      }
+      const j = JSON.parse(text) as { run_id: string };
+      openRun(j.run_id);
+      await fetchRecentRuns();
     } finally {
       setBusy(false);
     }
@@ -347,6 +404,11 @@ export function App() {
     return undefined;
   }, [runId, run, fetchRun]);
 
+  useEffect(() => {
+    if (!run || !FINAL_STATUSES.includes(run.status)) return;
+    fetchRecentRuns();
+  }, [run, fetchRecentRuns]);
+
   const segments = run?.segments ?? [];
   const approvedCount = segments.filter((segment) => approveMap[segment.id]).length;
   const approvedChangeCount = segments.filter((segment) => {
@@ -369,6 +431,24 @@ export function App() {
         : events.filter((event) => eventCategory(event) === eventFilter),
     [events, eventFilter],
   );
+  const filteredRecentRuns = useMemo(
+    () => recentRuns.filter((item) => matchesRecoveryFilter(item, recoveryFilter)),
+    [recentRuns, recoveryFilter],
+  );
+  const selectedRecentRun = useMemo(
+    () => filteredRecentRuns.find((item) => item.run_id === selectedRecentRunId) ?? null,
+    [filteredRecentRuns, selectedRecentRunId],
+  );
+
+  useEffect(() => {
+    if (filteredRecentRuns.length === 0) {
+      setSelectedRecentRunId("");
+      return;
+    }
+    if (!filteredRecentRuns.some((item) => item.run_id === selectedRecentRunId)) {
+      setSelectedRecentRunId(filteredRecentRuns[0].run_id);
+    }
+  }, [filteredRecentRuns, selectedRecentRunId]);
 
   const submitApproval = async () => {
     if (!runId) return;
@@ -407,6 +487,7 @@ export function App() {
       const text = await r.text();
       if (!r.ok) appendLocalEvent("error", text);
       await fetchRun(runId);
+      await fetchRecentRuns();
     } finally {
       setBusy(false);
     }
@@ -450,6 +531,7 @@ export function App() {
       }
       if (isRecord(payload.event)) appendEvent(payload.event as unknown as StreamEvent);
       await fetchRun(runId);
+      await fetchRecentRuns();
     } finally {
       setBusy(false);
     }
@@ -465,8 +547,17 @@ export function App() {
             Start a task, watch the agent work in real time, inspect its visible decisions,
             and step in before anything is written to GitLab.
           </p>
+          <div className="hero-highlights" aria-label="Platform safeguards">
+            <span>Audit-ready timeline</span>
+            <span>Human approval gate</span>
+            <span>Controlled GitLab apply</span>
+          </div>
         </div>
-        {run && <span className={`status-pill ${statusClass(run.status)}`}>{run.status}</span>}
+        {run && (
+          <span className={`status-pill ${statusClass(run.status)}`}>
+            {run.status.replaceAll("_", " ")}
+          </span>
+        )}
       </header>
 
       <section className="panel command-panel">
@@ -487,10 +578,93 @@ export function App() {
         />
       </section>
 
-      <section className="progress-grid">
-        {steps.map((step) => (
+      <section className="panel recovery-panel">
+        <div className="section-heading compact">
+          <div>
+            <h2>Recover or restart work</h2>
+            <p>Reopen persisted runs after refresh, or retry runs interrupted by failures.</p>
+          </div>
+          {run && isRetryAllowed(run.status) && (
+            <button type="button" className="primary" disabled={busy} onClick={() => retryRun(run.run_id)}>
+              Retry current run
+            </button>
+          )}
+        </div>
+        {recentRuns.length === 0 ? (
+          <div className="empty-state">Recent runs will appear here after you start one.</div>
+        ) : (
+          <div className="recovery-controls">
+            <label>
+              Filter
+              <select
+                value={recoveryFilter}
+                onChange={(e) => setRecoveryFilter(e.target.value as RecoveryFilter)}
+              >
+                <option value="all">All runs</option>
+                <option value="successful">Successful</option>
+                <option value="resume">Resume / retry</option>
+                <option value="active">Running</option>
+                <option value="review">Awaiting approval</option>
+              </select>
+            </label>
+            <label className="run-select-label">
+              Select run
+              <select
+                value={selectedRecentRunId}
+                onChange={(e) => setSelectedRecentRunId(e.target.value)}
+                disabled={filteredRecentRuns.length === 0}
+              >
+                {filteredRecentRuns.length === 0 ? (
+                  <option value="">No runs match this filter</option>
+                ) : (
+                  filteredRecentRuns.map((item) => (
+                    <option key={item.run_id} value={item.run_id}>
+                      {shortSessionId(item.run_id)} · {item.status.replaceAll("_", " ")}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+            <div className="recovery-actions">
+              <button
+                type="button"
+                disabled={busy || !selectedRecentRun || selectedRecentRun.run_id === runId}
+                onClick={() => selectedRecentRun && openRun(selectedRecentRun.run_id)}
+              >
+                {selectedRecentRun?.run_id === runId ? "Open" : "Reopen"}
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={busy || !selectedRecentRun || !isRetryAllowed(selectedRecentRun.status)}
+                onClick={() => selectedRecentRun && retryRun(selectedRecentRun.run_id)}
+              >
+                Retry
+              </button>
+            </div>
+            {selectedRecentRun && (
+              <div className="selected-run-summary">
+                <span className={`status-pill ${statusClass(selectedRecentRun.status)}`}>
+                  {selectedRecentRun.status.replaceAll("_", " ")}
+                </span>
+                <span>Session {shortSessionId(selectedRecentRun.run_id)}</span>
+                <span>{selectedRecentRun.project_id} · {selectedRecentRun.branch}</span>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      <section className="progress-grid" aria-label="Live agent progress" aria-live="polite">
+        {steps.map((step, index) => (
           <div key={step.label} className={`step-card step-${step.state}`}>
-            <span className="step-dot" />
+            <div className="step-card-topline">
+              <span className="step-dot" />
+              <span className="step-index">{String(index + 1).padStart(2, "0")}</span>
+            </div>
+            <span className={`step-state-label step-state-${step.state}`}>
+              {step.state === "active" ? "Running" : step.state === "done" ? "Done" : "Queued"}
+            </span>
             <strong>{step.label}</strong>
             <p>{step.description}</p>
           </div>

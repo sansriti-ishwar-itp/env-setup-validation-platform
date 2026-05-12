@@ -27,13 +27,16 @@ NAME_HINTS = (
     "compose.yaml",
     "Dockerfile",
     ".dockerignore",
+    "README.md",
 )
+
+NAME_HINTS_LOWER = {hint.lower() for hint in NAME_HINTS}
 
 
 def _matches_candidate(path: str) -> bool:
     lower = path.lower()
     name = lower.rsplit("/", 1)[-1]
-    if name in {h.lower() for h in NAME_HINTS}:
+    if name in NAME_HINTS_LOWER:
         return True
     if "/requirements/" in lower or lower.startswith("requirements/"):
         return True
@@ -63,11 +66,13 @@ def discover_environment_files(
 
     contents: dict[str, str] = {}
     errors: dict[str, str] = {}
-    for path in paths:
+
+    def fetch_path(path: str, *, record_not_found: bool) -> None:
         try:
             raw = rt.gitlab.get_file_raw(rt.project_id, path, rt.branch)
             if raw is None:
-                errors[path] = "not_found"
+                if record_not_found:
+                    errors[path] = "not_found"
             elif len(raw) > 512 * 1024:
                 contents[path] = raw[: 200 * 1024] + "\n... [truncated]\n"
             else:
@@ -75,6 +80,21 @@ def discover_environment_files(
         except Exception as exc:  # noqa: BLE001
             logger.exception("fetch %s", path)
             errors[path] = str(exc)
+
+    for path in paths:
+        fetch_path(path, record_not_found=True)
+
+    # GitLab tree responses are paginated and can still be incomplete on older
+    # servers/proxies. Probe common root setup files directly without surfacing
+    # optional missing files as errors.
+    for path in NAME_HINTS:
+        if len(contents) + len(errors) >= max_files:
+            break
+        if path in contents or path in errors:
+            continue
+        fetch_path(path, record_not_found=False)
+
+    paths = sorted(set(contents) | set(errors))
 
     rt.state[STATE_FILE_CONTENTS] = contents
 

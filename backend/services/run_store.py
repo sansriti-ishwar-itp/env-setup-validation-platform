@@ -236,6 +236,49 @@ class RunStore:
             )
             return int(cur.lastrowid)
 
+    def recover_interrupted_runs(self) -> list[str]:
+        """
+        Mark runs left in non-terminal in-memory phases as failed after startup.
+        SQLite keeps the state; the background asyncio task does not survive process restarts.
+        """
+        now = _utc_now()
+        message = "Run was interrupted by a backend restart. Retry to continue from the same goal."
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT run_id, status FROM runs
+                WHERE status IN ('pending', 'running', 'applying')
+                """
+            ).fetchall()
+            for row in rows:
+                run_id = str(row["run_id"])
+                previous_status = str(row["status"])
+                conn.execute(
+                    """
+                    UPDATE runs SET status = ?, updated_at = ?, error_message = ?
+                    WHERE run_id = ?
+                    """,
+                    ("failed", now, message, run_id),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO events (run_id, ts, kind, payload_json)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        now,
+                        "run_interrupted",
+                        json.dumps(
+                            {
+                                "message": message,
+                                "previous_status": previous_status,
+                            }
+                        ),
+                    ),
+                )
+            return [str(row["run_id"]) for row in rows]
+
     def list_events_since(self, run_id: str, after_id: int = 0) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -258,6 +301,19 @@ class RunStore:
             )
         return out
 
+    def list_runs(self, limit: int = 50) -> list[RunRecord]:
+        limit = max(1, min(limit, 200))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM runs
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._row_to_run(row) for row in rows]
+
     def get_run(self, run_id: str) -> RunRecord | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -265,6 +321,9 @@ class RunStore:
             ).fetchone()
         if not row:
             return None
+        return self._row_to_run(row)
+
+    def _row_to_run(self, row: sqlite3.Row) -> RunRecord:
         segments_raw = json.loads(row["segments_json"] or "[]")
         segments = [self._dict_to_segment(s) for s in segments_raw]
         return RunRecord(

@@ -48,16 +48,23 @@ class GitLabClient:
         path: str = "",
         recursive: bool = True,
     ) -> list[dict[str, Any]]:
-        """Return flat list of tree nodes (blob/trtree)."""
+        """Return flat list of tree nodes (blob/tree), following GitLab pagination."""
         enc = self._project_path(project_id)
         url = f"{self._api}/projects/{enc}/repository/tree"
-        params: dict[str, Any] = {"ref": ref, "recursive": recursive}
+        params: dict[str, Any] = {"ref": ref, "recursive": recursive, "per_page": 100}
         if path:
             params["path"] = path
-        resp = self._client.get(url, params=params)
-        resp.raise_for_status()
-        data = resp.json()
-        return data if isinstance(data, list) else []
+
+        nodes: list[dict[str, Any]] = []
+        page = "1"
+        while page:
+            resp = self._client.get(url, params={**params, "page": page})
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, list):
+                nodes.extend(item for item in data if isinstance(item, dict))
+            page = resp.headers.get("X-Next-Page", "")
+        return nodes
 
     def get_file_raw(self, project_id: str, file_path: str, ref: str) -> str | None:
         enc_proj = self._project_path(project_id)
